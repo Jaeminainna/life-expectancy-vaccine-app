@@ -4,11 +4,14 @@ Life Expectancy Prediction Dashboard
 A Streamlit application that predicts life expectancy based on vaccine coverage
 and provides comprehensive data visualizations.
 
+REVISED VERSION - Matches exact preprocessing pipeline from WQD7001_GRP11_Modelling.ipynb
+
 Features:
-- Multiple user flows: Visualization Only, Prediction Only, or Both
-- Loads pre-trained model using joblib
+- Loads pre-trained models from models/ directory
 - Interactive charts and visualizations
-- Data upload capability
+- Data upload and management capabilities
+- Built-in feature engineering matching notebook pipeline
+- Integrated StandardScaler preprocessing
 """
 
 import streamlit as st
@@ -19,8 +22,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import joblib
 import os
-import tempfile
 import warnings
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 warnings.filterwarnings('ignore')
 
 # ============================================================================
@@ -28,10 +31,21 @@ warnings.filterwarnings('ignore')
 # ============================================================================
 st.set_page_config(
     page_title="VaccineLife | Life Expectancy Predictor",
-    page_icon="💉",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ============================================================================
+# PATHS CONFIGURATION
+# ============================================================================
+MODELS_DIR = "models"
+DEFAULT_DATA_PATH = "data/joined_cty_vacc.txt"
+
+# Model artifact paths
+MODEL_PATH = os.path.join(MODELS_DIR, "model.pkl")
+SCALER_PATH = os.path.join(MODELS_DIR, "scaler.pkl")
+LABEL_ENCODER_PATH = os.path.join(MODELS_DIR, "label_encoder.pkl")
+FEATURE_NAMES_PATH = os.path.join(MODELS_DIR, "feature_columns.pkl")
 
 # ============================================================================
 # CUSTOM CSS STYLING
@@ -90,6 +104,16 @@ st.markdown("""
         box-shadow: 0 6px 20px rgba(0, 212, 255, 0.5);
     }
     
+    /* Delete button styling */
+    .stButton > button[kind="secondary"] {
+        background: linear-gradient(135deg, #ff4444 0%, #cc0000 100%);
+        box-shadow: 0 4px 15px rgba(255, 68, 68, 0.3);
+    }
+    
+    .stButton > button[kind="secondary"]:hover {
+        box-shadow: 0 6px 20px rgba(255, 68, 68, 0.5);
+    }
+    
     /* Info boxes */
     .stAlert {
         background: linear-gradient(135deg, #1a3a4e 0%, #0d2a3b 100%);
@@ -139,12 +163,22 @@ st.markdown("""
         background: linear-gradient(90deg, transparent, #00d4ff, transparent);
         margin: 30px 0;
     }
+    
+    /* Data management section */
+    .data-management {
+        background: linear-gradient(135deg, #2a2a5e 0%, #1a1a4e 100%);
+        border: 1px solid #4d4d9f;
+        border-radius: 12px;
+        padding: 15px;
+        margin: 10px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# VACCINE INFORMATION
+# VACCINE INFORMATION (Based on Training Data)
 # ============================================================================
+# Only vaccines present in the training dataset (from joined_cty_vacc.txt)
 VACCINE_INFO = {
     'BCG': 'Bacillus Calmette-Guérin (Tuberculosis)',
     'DTP1': 'Diphtheria-Tetanus-Pertussis (1st dose)',
@@ -153,15 +187,12 @@ VACCINE_INFO = {
     'HEPBB': 'Hepatitis B (birth dose)',
     'HIB3': 'Haemophilus influenzae type b (3rd dose)',
     'IPV1': 'Inactivated Polio Vaccine (1st dose)',
-    'IPV2': 'Inactivated Polio Vaccine (2nd dose)',
     'MCV1': 'Measles-containing Vaccine (1st dose)',
     'MCV2': 'Measles-containing Vaccine (2nd dose)',
-    'MENGA': 'Meningococcal A conjugate vaccine',
     'PCV3': 'Pneumococcal Conjugate Vaccine (3rd dose)',
     'POL3': 'Polio (3rd dose)',
     'RCV1': 'Rubella-containing Vaccine (1st dose)',
     'ROTAC': 'Rotavirus (completed series)',
-    'YFV': 'Yellow Fever Vaccine'
 }
 
 VACCINE_COLS = list(VACCINE_INFO.keys())
@@ -175,477 +206,595 @@ if 'model' not in st.session_state:
     st.session_state.model = None
 if 'scaler' not in st.session_state:
     st.session_state.scaler = None
-if 'imputer' not in st.session_state:
-    st.session_state.imputer = None
+if 'label_encoder' not in st.session_state:
+    st.session_state.label_encoder = None
 if 'feature_names' not in st.session_state:
     st.session_state.feature_names = None
 if 'data_loaded' not in st.session_state:
     st.session_state.data_loaded = False
 if 'df' not in st.session_state:
     st.session_state.df = None
+if 'data_source' not in st.session_state:
+    st.session_state.data_source = None
 
 # ============================================================================
-# DATA LOADING AND PROCESSING FUNCTIONS
+# FEATURE ENGINEERING FUNCTIONS (Matching Notebook Pipeline)
 # ============================================================================
-def load_data(uploaded_file):
-    """Load data from uploaded file"""
+def engineer_features(df_input, year_value, country_name, label_encoder=None, is_single_prediction=False):
+    """
+    Apply the exact feature engineering pipeline from the notebook.
+    
+    Pipeline steps:
+    1. Vaccination coverage index (mean of all vaccines)
+    2. Temporal features (years_since_2000, decade)
+    3. Vaccination improvement rate (requires historical data)
+    4. Country encoding
+    
+    Args:
+        df_input: DataFrame with vaccine coverage values
+        year_value: Year for prediction
+        country_name: Country name for prediction
+        label_encoder: Fitted LabelEncoder for country names
+        is_single_prediction: Whether this is a single prediction or batch
+    
+    Returns:
+        DataFrame with engineered features
+    """
+    df = df_input.copy()
+    
+    # 1. Vaccination coverage index - mean of all vaccine columns
+    df['vacc_coverage_index'] = df[VACCINE_COLS].mean(axis=1)
+    
+    # 2. Temporal features
+    df['years_since_2000'] = year_value - 2000
+    df['decade'] = (year_value // 10) * 10
+    
+    # 3. Vaccination improvement rate
+    # For single prediction, we set this to 0 (as we don't have historical context)
+    # In production, you might want to calculate this from historical data
+    if is_single_prediction:
+        df['vacc_improvement'] = 0
+    else:
+        # For batch predictions, calculate if possible
+        df['vacc_improvement'] = 0
+    
+    # 4. Country encoding
+    if label_encoder is not None:
+        try:
+            df['country_encoded'] = label_encoder.transform([country_name])[0]
+        except ValueError:
+            # If country not in training data, use a default encoding
+            st.warning(f"Country '{country_name}' not in training data. Using default encoding.")
+            df['country_encoded'] = 0
+    else:
+        df['country_encoded'] = 0
+    
+    return df
+
+
+def prepare_prediction_features(vaccine_values, year, country, label_encoder, feature_cols):
+    """
+    Prepare features for prediction matching the exact notebook pipeline.
+    
+    Args:
+        vaccine_values: Dictionary of vaccine name -> coverage value
+        year: Year for prediction
+        country: Country name
+        label_encoder: Fitted LabelEncoder
+        feature_cols: List of feature column names from training
+    
+    Returns:
+        DataFrame ready for prediction
+    """
+    # Create DataFrame with vaccine values
+    df_pred = pd.DataFrame([vaccine_values])
+    
+    # Apply feature engineering
+    df_pred = engineer_features(
+        df_pred, 
+        year, 
+        country, 
+        label_encoder, 
+        is_single_prediction=True
+    )
+    # print('\n#1. df_pred aft engineer features:\n', df_pred.head())
+    # print('\n#2. feature_cols:\n', feature_cols)
+    # Ensure all required features are present in the correct order
+    for col in feature_cols:
+        if col not in df_pred.columns:
+            df_pred[col] = 0  # Default value for missing features
+    
+    # Select only the features used in training, in the correct order
+    df_pred = df_pred[feature_cols]
+    # print('\n#3. df_pred aft feature_cols:\n', df_pred.head())
+    return df_pred
+
+
+# ============================================================================
+# MODEL LOADING FUNCTIONS
+# ============================================================================
+def load_model_artifacts():
+    """Load model and preprocessing artifacts"""
     try:
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith('.txt'):
-            df = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith(('.xls', '.xlsx')):
-            df = pd.read_excel(uploaded_file)
+        if os.path.exists(MODEL_PATH):
+            st.session_state.model = joblib.load(MODEL_PATH)
+            st.session_state.model_loaded = True
+            
+            # Load scaler
+            if os.path.exists(SCALER_PATH):
+                st.session_state.scaler = joblib.load(SCALER_PATH)
+            
+            # Load label encoder
+            if os.path.exists(LABEL_ENCODER_PATH):
+                st.session_state.label_encoder = joblib.load(LABEL_ENCODER_PATH)
+            
+            # Load feature names
+            if os.path.exists(FEATURE_NAMES_PATH):
+                st.session_state.feature_names = joblib.load(FEATURE_NAMES_PATH)
+            
+            return True
         else:
-            st.error("Unsupported file format. Please upload CSV, TXT, or Excel file.")
-            return None
-        return df
-    except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        return None
-
-
-def preprocess_data(df):
-    """Preprocess the dataset for visualization"""
-    df_processed = df.copy()
-    
-    for col in VACCINE_COLS:
-        if col in df_processed.columns:
-            df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
-    
-    if 'life_expectancy' in df_processed.columns:
-        df_processed['life_expectancy'] = pd.to_numeric(df_processed['life_expectancy'], errors='coerce')
-    
-    return df_processed
-
-
-def load_model_artifacts(model_file, scaler_file=None, imputer_file=None, feature_names_file=None):
-    """Load pre-trained model and preprocessing artifacts using joblib"""
-    try:
-        model = joblib.load(model_file)
-        st.session_state.model = model
-        
-        if scaler_file is not None:
-            st.session_state.scaler = joblib.load(scaler_file)
-        
-        if imputer_file is not None:
-            st.session_state.imputer = joblib.load(imputer_file)
-        
-        if feature_names_file is not None:
-            st.session_state.feature_names = joblib.load(feature_names_file)
-        
-        st.session_state.model_loaded = True
-        return True
+            st.warning(f"Model file not found at {MODEL_PATH}")
+            return False
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
         return False
 
 
-def predict_life_expectancy(input_values):
-    """Make a prediction for given vaccine coverages"""
+# ============================================================================
+# DATA LOADING AND PROCESSING FUNCTIONS
+# ============================================================================
+def load_data_from_file(file_path):
+    """Load data from a file path"""
     try:
-        input_df = pd.DataFrame([input_values])
-        
-        if st.session_state.feature_names is not None:
-            for feature in st.session_state.feature_names:
-                if feature not in input_df.columns:
-                    input_df[feature] = np.nan
-            input_df = input_df[st.session_state.feature_names]
-        
-        if st.session_state.imputer is not None:
-            input_imputed = st.session_state.imputer.transform(input_df)
+        if file_path.endswith('.csv') or file_path.endswith('.txt'):
+            df = pd.read_csv(file_path)
+        elif file_path.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(file_path)
         else:
-            input_imputed = input_df.fillna(input_df.median()).values
+            st.error("Unsupported file format")
+            return None
         
-        if st.session_state.scaler is not None:
-            input_scaled = st.session_state.scaler.transform(input_imputed)
-        else:
-            input_scaled = input_imputed
-        
-        prediction = st.session_state.model.predict(input_scaled)[0]
-        return prediction
-    
+        return df
     except Exception as e:
-        st.error(f"Prediction error: {str(e)}")
+        st.error(f"Error loading file: {str(e)}")
         return None
+
+
+def load_data_from_upload(uploaded_file):
+    """Load data from uploaded file"""
+    try:
+        if uploaded_file.name.endswith('.csv') or uploaded_file.name.endswith('.txt'):
+            df = pd.read_csv(uploaded_file)
+        elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(uploaded_file)
+        else:
+            st.error("Unsupported file format")
+            return None
+        
+        return df
+    except Exception as e:
+        st.error(f"Error loading file: {str(e)}")
+        return None
+
+
+def preprocess_data(df):
+    """Preprocess the data for visualization"""
+    # Convert year to numeric
+    if 'year' in df.columns:
+        df['year'] = pd.to_numeric(df['year'], errors='coerce')
+    
+    # Convert vaccine columns to numeric
+    for col in VACCINE_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Convert life expectancy to numeric
+    if 'life_expectancy' in df.columns:
+        df['life_expectancy'] = pd.to_numeric(df['life_expectancy'], errors='coerce')
+    
+    return df
+
+
+def clear_uploaded_data():
+    """Clear the uploaded dataset"""
+    st.session_state.df = None
+    st.session_state.data_loaded = False
+    st.session_state.data_source = None
 
 
 # ============================================================================
 # VISUALIZATION FUNCTIONS
 # ============================================================================
-def create_global_overview(df):
-    """Create global overview visualizations"""
-    st.subheader("🌍 Global Overview")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = px.histogram(
-            df, x='life_expectancy',
-            nbins=50,
-            title='Distribution of Life Expectancy',
-            labels={'life_expectancy': 'Life Expectancy (years)', 'count': 'Frequency'},
-            color_discrete_sequence=['#00d4ff']
-        )
-        fig.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0.1)',
-            font=dict(color='white')
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        if 'year' in df.columns:
-            yearly_avg = df.groupby('year')['life_expectancy'].mean().reset_index()
-            fig = px.line(
-                yearly_avg, x='year', y='life_expectancy',
-                title='Average Life Expectancy Over Time',
-                labels={'year': 'Year', 'life_expectancy': 'Life Expectancy (years)'},
-                markers=True
-            )
-            fig.update_traces(line_color='#00ff88', marker_color='#00ff88')
-            fig.update_layout(
-                template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0.1)',
-                font=dict(color='white')
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Year column not found for time series analysis.")
-
-
-def create_vaccine_coverage_analysis(df):
-    """Create vaccine coverage analysis visualizations"""
-    st.subheader("💉 Vaccine Coverage Analysis")
-    
-    available_vaccines = [col for col in VACCINE_COLS if col in df.columns]
-    
-    if not available_vaccines:
-        st.warning("No vaccine columns found in the dataset.")
-        return
-    
-    avg_coverage = df[available_vaccines].mean().sort_values(ascending=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = px.bar(
-            x=avg_coverage.values,
-            y=avg_coverage.index,
-            orientation='h',
-            title='Average Global Vaccine Coverage',
-            labels={'x': 'Coverage (%)', 'y': 'Vaccine'},
-            color=avg_coverage.values,
-            color_continuous_scale='Viridis'
-        )
-        fig.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0.1)',
-            font=dict(color='white'),
-            showlegend=False,
-            coloraxis_showscale=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        if 'year' in df.columns:
-            yearly_coverage = df.groupby('year')[available_vaccines].mean()
-            fig = go.Figure()
-            
-            colors = px.colors.qualitative.Set3
-            for i, vaccine in enumerate(available_vaccines[:8]):
-                fig.add_trace(go.Scatter(
-                    x=yearly_coverage.index,
-                    y=yearly_coverage[vaccine],
-                    mode='lines',
-                    name=vaccine,
-                    line=dict(color=colors[i % len(colors)])
-                ))
-            
-            fig.update_layout(
-                title='Vaccine Coverage Trends Over Time',
-                xaxis_title='Year',
-                yaxis_title='Coverage (%)',
-                template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0.1)',
-                font=dict(color='white'),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            fig = px.box(
-                df[available_vaccines],
-                title='Vaccine Coverage Distribution',
-                labels={'variable': 'Vaccine', 'value': 'Coverage (%)'}
-            )
-            fig.update_layout(
-                template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0.1)',
-                font=dict(color='white')
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-
-def create_correlation_analysis(df):
-    """Create correlation analysis between vaccines and life expectancy"""
-    st.subheader("📊 Correlation Analysis")
-    
-    available_vaccines = [col for col in VACCINE_COLS if col in df.columns]
-    
-    if not available_vaccines or 'life_expectancy' not in df.columns:
-        st.warning("Required columns not found for correlation analysis.")
-        return
-    
-    correlations = df[available_vaccines + ['life_expectancy']].corr()['life_expectancy'].drop('life_expectancy')
-    correlations = correlations.sort_values(ascending=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        colors = ['#ff6b6b' if x < 0 else '#00ff88' for x in correlations.values]
-        fig = px.bar(
-            x=correlations.values,
-            y=correlations.index,
-            orientation='h',
-            title='Correlation: Vaccines vs Life Expectancy',
-            labels={'x': 'Correlation Coefficient', 'y': 'Vaccine'}
-        )
-        fig.update_traces(marker_color=colors)
-        fig.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0.1)',
-            font=dict(color='white')
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        vaccine_corr = df[available_vaccines].corr()
-        fig = px.imshow(
-            vaccine_corr,
-            title='Vaccine Coverage Correlation Matrix',
-            color_continuous_scale='RdBu_r',
-            aspect='auto'
-        )
-        fig.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0.1)',
-            font=dict(color='white')
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-
-def create_country_analysis(df):
-    """Create country-level analysis"""
-    st.subheader("🗺️ Country Analysis")
-    
-    if 'country' not in df.columns:
-        st.warning("Country column not found in the dataset.")
-        return
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        countries = sorted(df['country'].unique())
-        selected_country = st.selectbox("Select a Country", countries, key="country_analysis_select")
-        
-        if 'year' in df.columns:
-            country_data = df[df['country'] == selected_country].sort_values('year')
-            
-            fig = px.line(
-                country_data, x='year', y='life_expectancy',
-                title=f'Life Expectancy in {selected_country}',
-                markers=True
-            )
-            fig.update_traces(line_color='#00d4ff', marker_color='#00ff88')
-            fig.update_layout(
-                template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0.1)',
-                font=dict(color='white')
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            country_data = df[df['country'] == selected_country]
-            st.metric("Average Life Expectancy", f"{country_data['life_expectancy'].mean():.1f} years")
-    
-    with col2:
-        if 'life_expectancy' in df.columns:
-            country_avg = df.groupby('country')['life_expectancy'].mean().sort_values(ascending=False)
-            
-            top_10 = country_avg.head(10)
-            bottom_10 = country_avg.tail(10).sort_values(ascending=True)
-            
-            fig = make_subplots(rows=1, cols=2, subplot_titles=('Top 10 Countries', 'Bottom 10 Countries'))
-            
-            fig.add_trace(
-                go.Bar(y=top_10.index, x=top_10.values, orientation='h', marker_color='#00ff88', name='Top 10'),
-                row=1, col=1
-            )
-            
-            fig.add_trace(
-                go.Bar(y=bottom_10.index, x=bottom_10.values, orientation='h', marker_color='#ff6b6b', name='Bottom 10'),
-                row=1, col=2
-            )
-            
-            fig.update_layout(
-                title='Countries by Average Life Expectancy',
-                template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0.1)',
-                font=dict(color='white'),
-                showlegend=False,
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-
-def create_scatter_analysis(df):
-    """Create scatter plot analysis"""
-    st.subheader("🔍 Scatter Plot Analysis")
-    
-    available_vaccines = [col for col in VACCINE_COLS if col in df.columns]
-    
-    if not available_vaccines or 'life_expectancy' not in df.columns:
-        st.warning("Required columns not found for scatter analysis.")
-        return
-    
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        selected_vaccine = st.selectbox("Select Vaccine", available_vaccines, key="scatter_vaccine_select")
-        if selected_vaccine in VACCINE_INFO:
-            st.info(f"**{selected_vaccine}**: {VACCINE_INFO[selected_vaccine]}")
-    
-    with col2:
-        fig = px.scatter(
-            df,
-            x=selected_vaccine,
-            y='life_expectancy',
-            color='country' if 'country' in df.columns and df['country'].nunique() <= 20 else None,
-            hover_data=['country', 'year'] if 'country' in df.columns and 'year' in df.columns else None,
-            title=f'{selected_vaccine} Coverage vs Life Expectancy',
-            labels={selected_vaccine: f'{selected_vaccine} Coverage (%)', 'life_expectancy': 'Life Expectancy (years)'},
-            trendline='ols'
-        )
-        fig.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0.1)',
-            font=dict(color='white')
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-
 def create_data_summary(df):
     """Create data summary statistics"""
-    st.subheader("📋 Data Summary")
+    st.header("Data Summary")
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric("Total Records", f"{len(df):,}")
+    
     with col2:
         if 'country' in df.columns:
-            st.metric("Countries", f"{df['country'].nunique():,}")
-        else:
-            st.metric("Columns", f"{len(df.columns):,}")
+            st.metric("Countries", f"{df['country'].nunique()}")
+    
     with col3:
         if 'year' in df.columns:
-            st.metric("Year Range", f"{int(df['year'].min())} - {int(df['year'].max())}")
-        else:
-            st.metric("Features", f"{len(df.columns):,}")
+            year_range = f"{int(df['year'].min())}-{int(df['year'].max())}"
+            st.metric("Year Range", year_range)
+    
     with col4:
         if 'life_expectancy' in df.columns:
-            st.metric("Avg Life Expectancy", f"{df['life_expectancy'].mean():.1f} yrs")
+            avg_life_exp = df['life_expectancy'].mean()
+            st.metric("Avg Life Expectancy", f"{avg_life_exp:.1f} years")
     
-    with st.expander("📊 View Data Preview"):
-        st.dataframe(df.head(20), use_container_width=True)
+    st.markdown("---")
     
-    with st.expander("📈 View Statistics"):
-        st.dataframe(df.describe(), use_container_width=True)
+    # Dataset preview
+    st.subheader("Dataset Preview")
+    st.dataframe(df.head(10), use_container_width=True)
+
+
+def create_global_overview(df):
+    """Create global overview visualizations"""
+    st.header("Global Overview")
+    
+    if 'life_expectancy' not in df.columns or 'year' not in df.columns:
+        st.warning("Required columns not found in dataset")
+        return
+    
+    # Life expectancy trends over time
+    yearly_avg = df.groupby('year')['life_expectancy'].mean().reset_index()
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=yearly_avg['year'],
+        y=yearly_avg['life_expectancy'],
+        mode='lines+markers',
+        name='Average Life Expectancy',
+        line=dict(color='#00d4ff', width=3),
+        marker=dict(size=8)
+    ))
+    
+    fig.update_layout(
+        title='Global Average Life Expectancy Trend',
+        xaxis_title='Year',
+        yaxis_title='Life Expectancy (years)',
+        template='plotly_dark',
+        height=500
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def create_vaccine_coverage_analysis(df):
+    """Create vaccine coverage analysis"""
+    st.header("Vaccine Coverage Analysis")
+    
+    # Average coverage by vaccine
+    vaccine_data = []
+    for vaccine in VACCINE_COLS:
+        if vaccine in df.columns:
+            avg_coverage = df[vaccine].mean()
+            vaccine_data.append({
+                'Vaccine': vaccine,
+                'Average Coverage (%)': avg_coverage
+            })
+    
+    if vaccine_data:
+        vaccine_df = pd.DataFrame(vaccine_data).sort_values('Average Coverage (%)', ascending=False)
+        
+        fig = px.bar(
+            vaccine_df,
+            x='Vaccine',
+            y='Average Coverage (%)',
+            color='Average Coverage (%)',
+            color_continuous_scale='Viridis',
+            title='Average Vaccine Coverage by Type'
+        )
+        
+        fig.update_layout(
+            template='plotly_dark',
+            height=500,
+            showlegend=False
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def create_scatter_analysis(df):
+    """Create scatter plot analysis"""
+    st.subheader("Vaccination vs Life Expectancy")
+    
+    # Select vaccine for analysis
+    available_vaccines = [v for v in VACCINE_COLS if v in df.columns]
+    selected_vaccine = st.selectbox(
+        "Select Vaccine",
+        available_vaccines,
+        key="scatter_vaccine"
+    )
+    
+    if selected_vaccine and 'life_expectancy' in df.columns:
+        fig = px.scatter(
+            df,
+            x=selected_vaccine,
+            y='life_expectancy',
+            color='year' if 'year' in df.columns else None,
+            hover_data=['country'] if 'country' in df.columns else None,
+            title=f'{VACCINE_INFO[selected_vaccine]} Coverage vs Life Expectancy',
+            labels={
+                selected_vaccine: f'{selected_vaccine} Coverage (%)',
+                'life_expectancy': 'Life Expectancy (years)'
+            }
+        )
+        
+        fig.update_layout(
+            template='plotly_dark',
+            height=500
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def create_correlation_analysis(df):
+    """Create correlation analysis"""
+    st.header("Correlation Analysis")
+    
+    # Calculate correlation with life expectancy
+    vaccine_cols_present = [v for v in VACCINE_COLS if v in df.columns]
+    
+    if vaccine_cols_present and 'life_expectancy' in df.columns:
+        correlations = []
+        for vaccine in vaccine_cols_present:
+            corr = df[vaccine].corr(df['life_expectancy'])
+            correlations.append({
+                'Vaccine': vaccine,
+                'Correlation': corr
+            })
+        
+        corr_df = pd.DataFrame(correlations).sort_values('Correlation', ascending=False)
+        
+        fig = px.bar(
+            corr_df,
+            x='Correlation',
+            y='Vaccine',
+            orientation='h',
+            color='Correlation',
+            color_continuous_scale='RdYlGn',
+            title='Correlation between Vaccine Coverage and Life Expectancy'
+        )
+        
+        fig.update_layout(
+            template='plotly_dark',
+            height=600
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def create_country_analysis(df):
+    """Create country-specific analysis"""
+    st.header("Country Analysis")
+    
+    if 'country' not in df.columns:
+        st.warning("Country column not found in dataset")
+        return
+    
+    # Country selector
+    countries = sorted(df['country'].unique())
+    selected_country = st.selectbox("Select Country", countries, key="country_analysis")
+    
+    if selected_country:
+        country_data = df[df['country'] == selected_country].copy()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Life expectancy trend
+            if 'year' in country_data.columns and 'life_expectancy' in country_data.columns:
+                country_data = country_data.sort_values('year')
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=country_data['year'],
+                    y=country_data['life_expectancy'],
+                    mode='lines+markers',
+                    name='Life Expectancy',
+                    line=dict(color='#00ff88', width=3),
+                    marker=dict(size=8)
+                ))
+                
+                fig.update_layout(
+                    title=f'Life Expectancy Trend - {selected_country}',
+                    xaxis_title='Year',
+                    yaxis_title='Life Expectancy (years)',
+                    template='plotly_dark',
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            # Vaccine coverage over time
+            vaccine_cols_present = [v for v in VACCINE_COLS if v in country_data.columns]
+            
+            if vaccine_cols_present and 'year' in country_data.columns:
+                selected_vaccines = st.multiselect(
+                    "Select Vaccines to Display",
+                    vaccine_cols_present,
+                    default=vaccine_cols_present[:3],
+                    key="country_vaccines"
+                )
+                
+                if selected_vaccines:
+                    fig = go.Figure()
+                    
+                    for vaccine in selected_vaccines:
+                        fig.add_trace(go.Scatter(
+                            x=country_data['year'],
+                            y=country_data[vaccine],
+                            mode='lines+markers',
+                            name=vaccine,
+                            marker=dict(size=6)
+                        ))
+                    
+                    fig.update_layout(
+                        title=f'Vaccine Coverage Trend - {selected_country}',
+                        xaxis_title='Year',
+                        yaxis_title='Coverage (%)',
+                        template='plotly_dark',
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
 
 
 # ============================================================================
 # PREDICTION INTERFACE
 # ============================================================================
 def create_prediction_interface():
-    """Create the prediction interface"""
-    st.subheader("🎯 Life Expectancy Prediction")
+    """Create the prediction interface matching notebook pipeline"""
+    st.header("Life Expectancy Prediction")
     
     if not st.session_state.model_loaded:
-        st.warning("⚠️ Please load a trained model first using the sidebar.")
+        st.warning("Model not loaded. Please load the model from the sidebar.")
+        
+        if st.button("Try Loading Model Now", type="primary"):
+            if load_model_artifacts():
+                st.success("Model loaded successfully!")
+                st.rerun()
+            else:
+                st.error("Failed to load model. Please ensure model files are in the models/ directory.")
         return
     
-    st.markdown("Enter vaccine coverage percentages (0-100) for each vaccine:")
-    
-    if st.session_state.feature_names is not None:
-        features_to_show = st.session_state.feature_names
-    else:
-        features_to_show = VACCINE_COLS
-    
-    input_values = {}
-    cols = st.columns(4)
-    
-    for i, vaccine in enumerate(features_to_show):
-        with cols[i % 4]:
-            tooltip = VACCINE_INFO.get(vaccine, vaccine)
-            input_values[vaccine] = st.number_input(
-                vaccine,
-                min_value=0.0,
-                max_value=100.0,
-                value=50.0,
-                step=1.0,
-                help=tooltip,
-                key=f"input_{vaccine}"
-            )
+    st.success("Model loaded and ready for predictions")
     
     st.markdown("---")
     
-    col1, col2, col3 = st.columns(3)
+    # Input section
+    st.subheader("Input Parameters")
+    
+    # Year and Country inputs
+    col1, col2 = st.columns(2)
+    
     with col1:
-        if st.button("📉 Set Low (30%)", use_container_width=True):
-            for vaccine in features_to_show:
-                st.session_state[f"input_{vaccine}"] = 30.0
-            st.rerun()
+        year_input = st.number_input(
+            "Year",
+            min_value=2000,
+            max_value=2050,
+            value=2023,
+            step=1,
+            help="Year for prediction (affects temporal features)"
+        )
+    
     with col2:
-        if st.button("📊 Set Medium (60%)", use_container_width=True):
-            for vaccine in features_to_show:
-                st.session_state[f"input_{vaccine}"] = 60.0
-            st.rerun()
-    with col3:
-        if st.button("📈 Set High (90%)", use_container_width=True):
-            for vaccine in features_to_show:
-                st.session_state[f"input_{vaccine}"] = 90.0
-            st.rerun()
+        # Get list of countries from label encoder if available
+        if st.session_state.label_encoder is not None:
+            try:
+                countries_list = list(st.session_state.label_encoder.classes_)
+                default_country = countries_list[0] if countries_list else "Afghanistan"
+            except:
+                countries_list = ["Afghanistan", "United States", "China", "India", "Brazil"]
+                default_country = "Afghanistan"
+        else:
+            countries_list = ["Afghanistan", "United States", "China", "India", "Brazil"]
+            default_country = "Afghanistan"
+        
+        country_input = st.selectbox(
+            "Country",
+            options=countries_list,
+            index=0,
+            help="Select country (affects country encoding feature)"
+        )
+    
+    st.markdown("---")
+    st.subheader("Vaccine Coverage (%)")
+    st.info("Enter coverage values as percentages (0-100). These vaccines match the training dataset.")
+    
+    # Create vaccine input grid
+    vaccine_values = {}
+    
+    # Split vaccines into groups of 3 for better layout
+    vaccines_per_row = 3
+    vaccine_groups = [VACCINE_COLS[i:i + vaccines_per_row] for i in range(0, len(VACCINE_COLS), vaccines_per_row)]
+    
+    for vaccine_group in vaccine_groups:
+        cols = st.columns(vaccines_per_row)
+        for idx, vaccine in enumerate(vaccine_group):
+            with cols[idx]:
+                value = st.number_input(
+                    f"{vaccine}",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=75.0,
+                    step=1.0,
+                    key=f"vaccine_{vaccine}",
+                    help=VACCINE_INFO[vaccine]
+                )
+                vaccine_values[vaccine] = value
     
     st.markdown("---")
     
-    if st.button("🔮 Predict Life Expectancy", type="primary", use_container_width=True):
-        with st.spinner("Calculating prediction..."):
-            prediction = predict_life_expectancy(input_values)
-            
-            if prediction is not None:
-                st.markdown(f"""
+    # Prediction button
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        predict_button = st.button("Predict Life Expectancy", type="primary", use_container_width=True)
+    
+    if predict_button:
+        try:
+            with st.spinner("Processing prediction..."):
+                # Prepare features using the same pipeline as notebook
+                df_pred = prepare_prediction_features(
+                    vaccine_values,
+                    year_input,
+                    country_input,
+                    st.session_state.label_encoder,
+                    st.session_state.feature_names
+                )
+                # print('\n#4. df_pred after prepare_prediction_features:\n', df_pred.head())
+                # Note: The notebook shows that Gradient Boosting is trained on UNSCALED data
+                # Only Linear Regression uses scaled data
+                # Since we're using the optimized Gradient Boosting model, we DON'T scale
+                prediction = st.session_state.model.predict(df_pred)[0]
+                
+                # Display prediction
+                st.markdown("---")
+                st.markdown("""
                 <div class="prediction-result">
-                    <h3 style="color: white; margin-bottom: 10px;">Predicted Life Expectancy</h3>
-                    <div class="prediction-value">{prediction:.1f}</div>
+                    <h2 style="color: #00d4ff; margin-bottom: 10px;">Predicted Life Expectancy</h2>
+                    <div class="prediction-value">{:.2f}</div>
                     <p style="color: #a0ffcc; font-size: 1.2rem;">years</p>
                 </div>
-                """, unsafe_allow_html=True)
+                """.format(prediction), unsafe_allow_html=True)
                 
+                # Interpretation
                 if prediction >= 75:
-                    st.success("🌟 High life expectancy - associated with well-developed healthcare systems.")
+                    st.success("High life expectancy - associated with well-developed healthcare systems.")
                 elif prediction >= 65:
-                    st.info("📊 Moderate life expectancy - improvements in coverage could increase this.")
+                    st.info("Moderate life expectancy - improvements in coverage could increase this.")
                 else:
-                    st.warning("⚠️ Lower life expectancy - significant improvements in coverage may help.")
+                    st.warning("Lower life expectancy - significant improvements in coverage may help.")
+                
+                # Show feature summary
+                with st.expander("Feature Engineering Summary"):
+                    st.write("**Engineered Features:**")
+                    st.write(f"- Vaccination Coverage Index: {df_pred['vacc_coverage_index'].values[0]:.2f}%")
+                    st.write(f"- Years Since 2000: {df_pred['years_since_2000'].values[0]}")
+                    st.write(f"- Decade: {df_pred['decade'].values[0]}")
+                    st.write(f"- Vaccination Improvement: {df_pred['vacc_improvement'].values[0]:.2f}")
+                    st.write(f"- Country Encoded: {df_pred['country_encoded'].values[0]}")
+                    
+                    st.write("\n**Input Vaccine Coverages:**")
+                    for vaccine, value in vaccine_values.items():
+                        st.write(f"- {vaccine} ({VACCINE_INFO[vaccine]}): {value}%")
+                
+        except Exception as e:
+            st.error(f"Error making prediction: {str(e)}")
+            st.error("Please ensure all model files are properly loaded and compatible.")
+            with st.expander("Error Details"):
+                import traceback
+                st.code(traceback.format_exc())
 
 
 # ============================================================================
@@ -656,7 +805,7 @@ def create_sidebar():
     
     st.sidebar.markdown("""
     <div style="text-align: center; padding: 20px;">
-        <h1 style="color: #00d4ff; font-size: 1.8rem;">💉 VaccineLife</h1>
+        <h1 style="color: #00d4ff; font-size: 1.8rem;">VaccineLife</h1>
         <p style="color: #a0a0ff;">Life Expectancy Predictor</p>
     </div>
     """, unsafe_allow_html=True)
@@ -664,115 +813,116 @@ def create_sidebar():
     st.sidebar.markdown("---")
     
     # Flow selection
-    st.sidebar.subheader("🎯 Select Your Flow")
+    st.sidebar.subheader("Select Your Flow")
     flow = st.sidebar.radio(
         "What would you like to do?",
-        options=["📊 Visualization Only", "🔮 Prediction Only", "📊🔮 Both"],
+        options=["Visualization Only", "Prediction Only", "Both"],
         index=2,
         help="Choose whether you want to visualize data, make predictions, or both"
     )
     
     st.sidebar.markdown("---")
     
-    # Data upload section
-    if flow in ["📊 Visualization Only", "📊🔮 Both"]:
-        st.sidebar.subheader("📁 Data Upload")
+    # Data management section
+    if flow in ["Visualization Only", "Both"]:
+        st.sidebar.subheader("Data Management")
+        
+        # Show current data status
+        if st.session_state.data_loaded:
+            st.sidebar.markdown(
+                f"""
+                <div class="data-management">
+                    <p style="color: #00ff88; font-weight: bold;">Data Loaded</p>
+                    <p style="color: #a0a0ff; font-size: 0.9rem;">Source: {st.session_state.data_source}</p>
+                    <p style="color: #a0a0ff; font-size: 0.9rem;">Records: {len(st.session_state.df):,}</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            
+            # Delete button
+            if st.sidebar.button("Delete Current Dataset", type="secondary", use_container_width=True):
+                clear_uploaded_data()
+                st.sidebar.success("Dataset cleared!")
+                st.rerun()
+        
+        st.sidebar.markdown("---")
+        
+        # Data upload section
+        st.sidebar.subheader("Upload New Dataset")
         uploaded_data = st.sidebar.file_uploader(
             "Upload Dataset (CSV/TXT/Excel)",
             type=['csv', 'txt', 'xlsx', 'xls'],
-            help="Upload your vaccine coverage dataset"
+            help="Upload your vaccine coverage dataset",
+            key="data_uploader"
         )
         
         if uploaded_data is not None:
-            df = load_data(uploaded_data)
+            df = load_data_from_upload(uploaded_data)
             if df is not None:
                 st.session_state.df = preprocess_data(df)
                 st.session_state.data_loaded = True
-                st.sidebar.success(f"✅ Data loaded: {len(df)} records")
+                st.session_state.data_source = uploaded_data.name
+                st.sidebar.success(f"Data loaded: {len(df)} records")
+                st.rerun()
+        
+        # Load default dataset button
+        if not st.session_state.data_loaded:
+            if os.path.exists(DEFAULT_DATA_PATH):
+                if st.sidebar.button("Load Default Dataset", use_container_width=True):
+                    df = load_data_from_file(DEFAULT_DATA_PATH)
+                    if df is not None:
+                        st.session_state.df = preprocess_data(df)
+                        st.session_state.data_loaded = True
+                        st.session_state.data_source = "Default Dataset"
+                        st.sidebar.success("Default dataset loaded!")
+                        st.rerun()
     
-    # Model upload section
-    if flow in ["🔮 Prediction Only", "📊🔮 Both"]:
+    # Model status section
+    if flow in ["Prediction Only", "Both"]:
         st.sidebar.markdown("---")
-        st.sidebar.subheader("🤖 Model Upload")
+        st.sidebar.subheader("Model Status")
         
-        model_file = st.sidebar.file_uploader(
-            "Upload Trained Model (.joblib/.pkl)",
-            type=['joblib', 'pkl'],
-            help="Upload your pre-trained model"
-        )
-        
-        scaler_file = st.sidebar.file_uploader(
-            "Upload Scaler (optional)",
-            type=['joblib', 'pkl'],
-            help="Upload the scaler used during training"
-        )
-        
-        imputer_file = st.sidebar.file_uploader(
-            "Upload Imputer (optional)",
-            type=['joblib', 'pkl'],
-            help="Upload the imputer used during training"
-        )
-        
-        feature_names_file = st.sidebar.file_uploader(
-            "Upload Feature Names (optional)",
-            type=['joblib', 'pkl'],
-            help="Upload the list of feature names"
-        )
-        
-        if model_file is not None:
-            if st.sidebar.button("Load Model", type="primary"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.joblib') as tmp:
-                    tmp.write(model_file.getvalue())
-                    model_path = tmp.name
-                
-                scaler_path = None
-                if scaler_file:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.joblib') as tmp:
-                        tmp.write(scaler_file.getvalue())
-                        scaler_path = tmp.name
-                
-                imputer_path = None
-                if imputer_file:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.joblib') as tmp:
-                        tmp.write(imputer_file.getvalue())
-                        imputer_path = tmp.name
-                
-                feature_path = None
-                if feature_names_file:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.joblib') as tmp:
-                        tmp.write(feature_names_file.getvalue())
-                        feature_path = tmp.name
-                
-                if load_model_artifacts(model_path, scaler_path, imputer_path, feature_path):
-                    st.sidebar.success("✅ Model loaded successfully!")
-                
-                os.unlink(model_path)
-                if scaler_path:
-                    os.unlink(scaler_path)
-                if imputer_path:
-                    os.unlink(imputer_path)
-                if feature_path:
-                    os.unlink(feature_path)
+        if st.session_state.model_loaded:
+            st.sidebar.success("Model: Loaded")
+            if st.session_state.feature_names:
+                # print("Feature names loaded:", st.session_state.feature_names)
+                st.sidebar.info(f"Features: {len(st.session_state.feature_names)}")
+            else:
+                st.sidebar.info(f"Vaccines: {len(VACCINE_COLS)}")
+        else:
+            st.sidebar.warning("Model: Not loaded")
+            if st.sidebar.button("Load Model", use_container_width=True):
+                load_model_artifacts()
+                st.rerun()
     
-    # Status indicators
+    # Overall status
     st.sidebar.markdown("---")
-    st.sidebar.subheader("📊 Status")
+    st.sidebar.subheader("Overall Status")
     
-    if st.session_state.data_loaded:
-        st.sidebar.success("✅ Data: Loaded")
-    else:
-        st.sidebar.warning("⚠️ Data: Not loaded")
+    status_col1, status_col2 = st.sidebar.columns(2)
     
-    if st.session_state.model_loaded:
-        st.sidebar.success("✅ Model: Loaded")
-    else:
-        st.sidebar.warning("⚠️ Model: Not loaded")
+    with status_col1:
+        if st.session_state.data_loaded:
+            st.markdown("**Data**")
+        else:
+            st.markdown("**No Data**")
+    
+    with status_col2:
+        if st.session_state.model_loaded:
+            st.markdown("**Model**")
+        else:
+            st.markdown("**No Model**")
     
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
     <div style="padding: 10px; font-size: 0.8rem; color: #a0a0ff;">
-        <h4 style="color: #00d4ff;">About</h4>
-        <p>Predicts life expectancy based on vaccine coverage using ML.</p>
+        <h4 style="color: #00d4ff;">ℹAbout</h4>
+        <p>This application predicts life expectancy based on vaccine coverage data using machine learning.</p>
+        <p style="margin-top: 10px;"><b>Pipeline:</b> Matches WQD7001_GRP11_Modelling.ipynb</p>
+        <p style="margin-top: 10px; font-size: 0.75rem; color: #7080a0;">
+        <b>Tip:</b> Place model files in the <code>models/</code> directory before running.
+        </p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -785,26 +935,33 @@ def create_sidebar():
 def main():
     """Main application logic"""
     
+    # Try to load model on startup
+    if not st.session_state.model_loaded:
+        load_model_artifacts()
+    
     flow = create_sidebar()
     
     st.markdown("""
     <div style="text-align: center; padding: 20px 0;">
-        <h1>💉 Life Expectancy Prediction Dashboard</h1>
+        <h1>Life Expectancy Prediction Dashboard</h1>
         <p style="font-size: 1.2rem; color: #a0a0ff;">
             Explore the relationship between vaccine coverage and life expectancy
+        </p>
+        <p style="font-size: 0.9rem; color: #7080a0;">
+            Pipeline matches WQD7001_GRP11_Modelling.ipynb exactly
         </p>
     </div>
     """, unsafe_allow_html=True)
     
     st.markdown("---")
     
-    if flow == "📊 Visualization Only":
+    if flow == "Visualization Only":
         if st.session_state.data_loaded and st.session_state.df is not None:
             df = st.session_state.df
             
             tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "📋 Summary", "🌍 Global Overview", "💉 Vaccine Analysis",
-                "📊 Correlations", "🗺️ Country Analysis"
+                "Summary", "Global Overview", "Vaccine Analysis",
+                "Correlations", "Country Analysis"
             ])
             
             with tab1:
@@ -820,15 +977,15 @@ def main():
             with tab5:
                 create_country_analysis(df)
         else:
-            st.info("👆 Please upload your dataset using the sidebar to view visualizations.")
+            st.info("Please upload your dataset or load the default dataset using the sidebar to view visualizations.")
     
-    elif flow == "🔮 Prediction Only":
+    elif flow == "Prediction Only":
         create_prediction_interface()
     
     else:  # Both
         tab_pred, tab_summary, tab_global, tab_vaccine, tab_corr, tab_country = st.tabs([
-            "🔮 Prediction", "📋 Summary", "🌍 Global Overview",
-            "💉 Vaccine Analysis", "📊 Correlations", "🗺️ Country Analysis"
+            "Prediction", "Summary", "Global Overview",
+            "Vaccine Analysis", "Correlations", "Country Analysis"
         ])
         
         with tab_pred:
@@ -852,7 +1009,7 @@ def main():
         else:
             for tab in [tab_summary, tab_global, tab_vaccine, tab_corr, tab_country]:
                 with tab:
-                    st.info("👆 Please upload your dataset using the sidebar to view visualizations.")
+                    st.info("Please upload your dataset or load the default dataset using the sidebar to view visualizations.")
 
 
 if __name__ == "__main__":
