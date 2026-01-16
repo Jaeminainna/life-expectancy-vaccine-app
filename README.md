@@ -1,30 +1,77 @@
-# 💉 VaccineLife - Life Expectancy Prediction Dashboard
+**TOPIC: FORECASTING LIFE EXPECTANCY BASED ON IMMUNIZATION TRENDS**
 
+**1. PROJECT BACKGROUND**
+- Life expectancy is a key indicator of national health and reflects how effectively countries prevent disease and support long-term wellbeing.
+- Immunization plays a major role in improving population health, with higher vaccine coverage consistently associated with lower mortality and longer lifespan.
+- This project aims to provide insights that support public health planning and align with Sustainable Development Goal 3 - Good Health and Well-being by analyzing global vaccination and life expectancy data.
+
+**2. DATA COLLECTION**
+
+i. United Nations Children's Fund (UNICEF)
+- Annual Vaccination Coverage dataset (.csv)
+https://data.unicef.org/resources/dataset/immunization/
+
+ii. World Health Organization (WHO)
+- Life Expectancy dataset (.csv)
+http://who.int/data/gho/data/indicators/indicator-details/GHO/life-expectancy-at-birth-(years)
+
+iii. International Co-operative Alliance (ICA)
+- List of Developing Countries
+https://www.ica.org/app/uploads/2024/03/List-of-Developing-Countries-w024_Updated.pdf
+
+
+**3. KEY VISUALIZATION**
+
+**i. Coverage per Vaccine: Top & Bottom 10 developing Countries vs Global Average**
+
+<img width="463" height="245" alt="image" src="https://github.com/user-attachments/assets/94f62272-6455-45ef-b828-34269dbbb544" />
+
+**ii. Developing vs Global Coverage Trend by Vaccine (Year > 2000)**
+
+<img width="625" height="409" alt="image" src="https://github.com/user-attachments/assets/18819bdb-c707-4bd3-9809-e545e9a19444" />
+
+**iii. Countries life expectancy**
+
+    <img width="850" height="552" alt="image" src="https://github.com/user-attachments/assets/b12eb06d-7c6e-4f81-8fcb-8c618ea3ac2a" />
+
+    <img width="1232" height="545" alt="image" src="https://github.com/user-attachments/assets/4a058e15-d770-4e88-a467-dea1eaa12d3a" />
+
+**iv. Vaccine cov. vs life expectancy**
+
+   <img width="538" height="483" alt="image" src="https://github.com/user-attachments/assets/7a0d60a9-1347-4d0a-85a0-e49361ac38ec" />
+
+   <img width="694" height="623" alt="image" src="https://github.com/user-attachments/assets/6a178d8e-3821-46a6-a4bc-9498bf848dee" />
+
+
+**4. Data Product**
+
+**i. VaccineLife - Life Expectancy Prediction Dashboard**
 A Streamlit-based data product that predicts life expectancy based on vaccine coverage rates and provides comprehensive data visualizations.
 
-## 🌟 Features
+**ii. Features**
+- **Multiple User Flows.**
+  The application offers three distinct flows to accommodate different user needs:
+  i. Visualization Only
+    - Upload your data and explore various visualizations without needing a trained model
+  ii. Prediction Only
+    - Load your pre-trained model and make predictions on vaccine coverage scenarios
+  iii. Both
+    - Full functionality with both visualization and prediction capabilities
 
-### Multiple User Flows
-The application offers three distinct flows to accommodate different user needs:
+- **Visualizations Included**
+  i. **Global Overview**: Life expectancy distribution and trends over time
+  ii. **Vaccine Coverage Analysis**: Average coverage by vaccine type and trends
+  iii. **Correlation Analysis**: Vaccine vs life expectancy correlations and heatmaps
+  iv. **Country Analysis**: Country-specific trends and top/bottom rankings
+  v. **Scatter Plot Analysis**: Interactive scatter plots with trendlines
 
-1. **📊 Visualization Only** - Upload your data and explore various visualizations without needing a trained model
-2. **🔮 Prediction Only** - Load your pre-trained model and make predictions on vaccine coverage scenarios
-3. **📊🔮 Both** - Full functionality with both visualization and prediction capabilities
+- **Prediction Features**
+  i. Input vaccine coverage values for 16 different vaccines
+  ii. Quick-fill options (Low/Medium/High coverage)
+  iii. Visual prediction results with interpretation
+  iv. Supports pre-trained models saved with joblib
 
-### Visualizations Included
-- **Global Overview**: Life expectancy distribution and trends over time
-- **Vaccine Coverage Analysis**: Average coverage by vaccine type and trends
-- **Correlation Analysis**: Vaccine vs life expectancy correlations and heatmaps
-- **Country Analysis**: Country-specific trends and top/bottom rankings
-- **Scatter Plot Analysis**: Interactive scatter plots with trendlines
-
-### Prediction Features
-- Input vaccine coverage values for 16 different vaccines
-- Quick-fill options (Low/Medium/High coverage)
-- Visual prediction results with interpretation
-- Supports pre-trained models saved with joblib
-
-## 🚀 Installation
+**3. Installation**
 
 1. Clone or download this project
 
@@ -38,7 +85,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## 📁 File Structure
+**4. File Structure**
 
 ```
 vaccine_life_expectancy_app/
@@ -52,7 +99,7 @@ vaccine_life_expectancy_app/
     └── feature_names.joblib
 ```
 
-## 🤖 Model Requirements
+**5. Model Requirements**
 
 ### Saving Your Model from Google Colab
 
