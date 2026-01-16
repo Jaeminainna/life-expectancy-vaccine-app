@@ -39,14 +39,15 @@ st.set_page_config(
 # PATHS CONFIGURATION
 # ============================================================================
 MODELS_DIR = "models"
-DEFAULT_DATA_PATH = "data/joined_cty_vacc.txt"
+DATA_DIR = "data"
+DATASET_PATH = "joined_cty_vacc.csv"
 
 # Model artifact paths
 MODEL_PATH = os.path.join(MODELS_DIR, "model.pkl")
 SCALER_PATH = os.path.join(MODELS_DIR, "scaler.pkl")
 LABEL_ENCODER_PATH = os.path.join(MODELS_DIR, "label_encoder.pkl")
 FEATURE_NAMES_PATH = os.path.join(MODELS_DIR, "feature_columns.pkl")
-
+DEFAULT_DATA_PATH = os.path.join(DATA_DIR, DATASET_PATH)
 # ============================================================================
 # CUSTOM CSS STYLING
 # ============================================================================
@@ -553,7 +554,7 @@ def create_correlation_analysis(df):
                 'Correlation': corr
             })
         
-        corr_df = pd.DataFrame(correlations).sort_values('Correlation', ascending=False)
+        corr_df = pd.DataFrame(correlations).sort_values('Correlation', ascending=True)
         
         fig = px.bar(
             corr_df,
@@ -654,7 +655,7 @@ def create_country_analysis(df):
 # PREDICTION INTERFACE
 # ============================================================================
 def create_prediction_interface():
-    """Create the prediction interface matching notebook pipeline"""
+    """Create the prediction interface matching notebook pipeline with comparison feature"""
     st.header("Life Expectancy Prediction")
     
     if not st.session_state.model_loaded:
@@ -672,129 +673,372 @@ def create_prediction_interface():
     
     st.markdown("---")
     
-    # Input section
-    st.subheader("Input Parameters")
+    # Create tabs for Single Prediction and Comparison
+    pred_tab1, pred_tab2 = st.tabs(["Single Prediction", "Comparison"])
     
-    # Year and Country inputs
-    col1, col2 = st.columns(2)
+    # ============================================================================
+    # TAB 1: SINGLE PREDICTION
+    # ============================================================================
+    with pred_tab1:
+        st.subheader("Input Parameters")
+        
+        # Year and Country inputs
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            year_input = st.number_input(
+                "Year",
+                min_value=2000,
+                max_value=2050,
+                value=2023,
+                step=1,
+                help="Year for prediction (affects temporal features)",
+                key="single_year"
+            )
+        
+        with col2:
+            # Get list of countries from label encoder if available
+            if st.session_state.label_encoder is not None:
+                try:
+                    countries_list = list(st.session_state.label_encoder.classes_)
+                    default_country = countries_list[0] if countries_list else "Afghanistan"
+                except:
+                    countries_list = ["Afghanistan", "United States", "China", "India", "Brazil"]
+                    default_country = "Afghanistan"
+            else:
+                countries_list = ["Afghanistan", "United States", "China", "India", "Brazil"]
+                default_country = "Afghanistan"
+            
+            country_input = st.selectbox(
+                "Country",
+                options=countries_list,
+                index=0,
+                help="Select country (affects country encoding feature)",
+                key="single_country"
+            )
+        
+        st.markdown("---")
+        st.subheader("Vaccine Coverage (%)")
+        st.info("Enter coverage values as percentages (0-100). These vaccines match the training dataset.")
+        
+        # Create vaccine input grid
+        vaccine_values = {}
+        
+        # Split vaccines into groups of 3 for better layout
+        vaccines_per_row = 3
+        vaccine_groups = [VACCINE_COLS[i:i + vaccines_per_row] for i in range(0, len(VACCINE_COLS), vaccines_per_row)]
+        
+        for vaccine_group in vaccine_groups:
+            cols = st.columns(vaccines_per_row)
+            for idx, vaccine in enumerate(vaccine_group):
+                with cols[idx]:
+                    value = st.number_input(
+                        f"{vaccine}",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=75.0,
+                        step=1.0,
+                        key=f"single_vaccine_{vaccine}",
+                        help=VACCINE_INFO[vaccine]
+                    )
+                    vaccine_values[vaccine] = value
+        
+        st.markdown("---")
+        
+        # Prediction button
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            predict_button = st.button("Predict Life Expectancy", type="primary", use_container_width=True, key="single_predict")
+        
+        if predict_button:
+            try:
+                with st.spinner("Processing prediction..."):
+                    # Prepare features using the same pipeline as notebook
+                    df_pred = prepare_prediction_features(
+                        vaccine_values,
+                        year_input,
+                        country_input,
+                        st.session_state.label_encoder,
+                        st.session_state.feature_names
+                    )
+                    prediction = st.session_state.model.predict(df_pred)[0]
+                    
+                    # Display prediction
+                    st.markdown("---")
+                    st.markdown("""
+                    <div class="prediction-result">
+                        <h2 style="color: #00d4ff; margin-bottom: 10px;">Predicted Life Expectancy</h2>
+                        <div class="prediction-value">{:.2f}</div>
+                        <p style="color: #a0ffcc; font-size: 1.2rem;">years</p>
+                    </div>
+                    """.format(prediction), unsafe_allow_html=True)
+                    
+                    # Interpretation
+                    if prediction >= 75:
+                        st.success("High life expectancy - associated with well-developed healthcare systems.")
+                    elif prediction >= 65:
+                        st.info("Moderate life expectancy - improvements in coverage could increase this.")
+                    else:
+                        st.warning("Lower life expectancy - significant improvements in coverage may help.")
+                    
+                    # Show feature summary
+                    with st.expander("Feature Engineering Summary"):
+                        st.write("**Engineered Features:**")
+                        st.write(f"- Vaccination Coverage Index: {df_pred['vacc_coverage_index'].values[0]:.2f}%")
+                        st.write(f"- Years Since 2000: {df_pred['years_since_2000'].values[0]}")
+                        st.write(f"- Decade: {df_pred['decade'].values[0]}")
+                        st.write(f"- Vaccination Improvement: {df_pred['vacc_improvement'].values[0]:.2f}")
+                        st.write(f"- Country Encoded: {df_pred['country_encoded'].values[0]}")
+                        
+                        st.write("\n**Input Vaccine Coverages:**")
+                        for vaccine, value in vaccine_values.items():
+                            st.write(f"- {vaccine} ({VACCINE_INFO[vaccine]}): {value}%")
+                    
+            except Exception as e:
+                st.error(f"Error making prediction: {str(e)}")
+                st.error("Please ensure all model files are properly loaded and compatible.")
+                with st.expander("Error Details"):
+                    import traceback
+                    st.code(traceback.format_exc())
     
-    with col1:
-        year_input = st.number_input(
-            "Year",
-            min_value=2000,
-            max_value=2050,
-            value=2023,
-            step=1,
-            help="Year for prediction (affects temporal features)"
-        )
-    
-    with col2:
-        # Get list of countries from label encoder if available
+    # ============================================================================
+    # TAB 2: COMPARISON
+    # ============================================================================
+    with pred_tab2:
+        st.subheader("Compare Two Vaccine Combinations")
+        st.info("Compare life expectancy predictions for two different vaccine coverage scenarios.")
+        
+        # Get countries list
         if st.session_state.label_encoder is not None:
             try:
                 countries_list = list(st.session_state.label_encoder.classes_)
-                default_country = countries_list[0] if countries_list else "Afghanistan"
             except:
                 countries_list = ["Afghanistan", "United States", "China", "India", "Brazil"]
-                default_country = "Afghanistan"
         else:
             countries_list = ["Afghanistan", "United States", "China", "India", "Brazil"]
-            default_country = "Afghanistan"
         
-        country_input = st.selectbox(
-            "Country",
-            options=countries_list,
-            index=0,
-            help="Select country (affects country encoding feature)"
-        )
-    
-    st.markdown("---")
-    st.subheader("Vaccine Coverage (%)")
-    st.info("Enter coverage values as percentages (0-100). These vaccines match the training dataset.")
-    
-    # Create vaccine input grid
-    vaccine_values = {}
-    
-    # Split vaccines into groups of 3 for better layout
-    vaccines_per_row = 3
-    vaccine_groups = [VACCINE_COLS[i:i + vaccines_per_row] for i in range(0, len(VACCINE_COLS), vaccines_per_row)]
-    
-    for vaccine_group in vaccine_groups:
-        cols = st.columns(vaccines_per_row)
-        for idx, vaccine in enumerate(vaccine_group):
-            with cols[idx]:
-                value = st.number_input(
-                    f"{vaccine}",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=75.0,
-                    step=1.0,
-                    key=f"vaccine_{vaccine}",
-                    help=VACCINE_INFO[vaccine]
-                )
-                vaccine_values[vaccine] = value
-    
-    st.markdown("---")
-    
-    # Prediction button
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        predict_button = st.button("Predict Life Expectancy", type="primary", use_container_width=True)
-    
-    if predict_button:
-        try:
-            with st.spinner("Processing prediction..."):
-                # Prepare features using the same pipeline as notebook
-                df_pred = prepare_prediction_features(
-                    vaccine_values,
-                    year_input,
-                    country_input,
-                    st.session_state.label_encoder,
-                    st.session_state.feature_names
-                )
-                # print('\n#4. df_pred after prepare_prediction_features:\n', df_pred.head())
-                # Note: The notebook shows that Gradient Boosting is trained on UNSCALED data
-                # Only Linear Regression uses scaled data
-                # Since we're using the optimized Gradient Boosting model, we DON'T scale
-                prediction = st.session_state.model.predict(df_pred)[0]
-                
-                # Display prediction
-                st.markdown("---")
-                st.markdown("""
-                <div class="prediction-result">
-                    <h2 style="color: #00d4ff; margin-bottom: 10px;">Predicted Life Expectancy</h2>
-                    <div class="prediction-value">{:.2f}</div>
-                    <p style="color: #a0ffcc; font-size: 1.2rem;">years</p>
-                </div>
-                """.format(prediction), unsafe_allow_html=True)
-                
-                # Interpretation
-                if prediction >= 75:
-                    st.success("High life expectancy - associated with well-developed healthcare systems.")
-                elif prediction >= 65:
-                    st.info("Moderate life expectancy - improvements in coverage could increase this.")
-                else:
-                    st.warning("Lower life expectancy - significant improvements in coverage may help.")
-                
-                # Show feature summary
-                with st.expander("Feature Engineering Summary"):
-                    st.write("**Engineered Features:**")
-                    st.write(f"- Vaccination Coverage Index: {df_pred['vacc_coverage_index'].values[0]:.2f}%")
-                    st.write(f"- Years Since 2000: {df_pred['years_since_2000'].values[0]}")
-                    st.write(f"- Decade: {df_pred['decade'].values[0]}")
-                    st.write(f"- Vaccination Improvement: {df_pred['vacc_improvement'].values[0]:.2f}")
-                    st.write(f"- Country Encoded: {df_pred['country_encoded'].values[0]}")
+        # Common parameters
+        st.markdown("### Common Parameters")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            comp_year = st.number_input(
+                "Year",
+                min_value=2000,
+                max_value=2050,
+                value=2023,
+                step=1,
+                help="Year for prediction (affects temporal features)",
+                key="comp_year"
+            )
+        
+        with col2:
+            comp_country = st.selectbox(
+                "Country",
+                options=countries_list,
+                index=0,
+                help="Select country (affects country encoding feature)",
+                key="comp_country"
+            )
+        
+        st.markdown("---")
+        
+        # Create two columns for comparison
+        comp_col1, comp_col2 = st.columns(2)
+        
+        # ========== COMBINATION 1 ==========
+        with comp_col1:
+            st.markdown("### Combination 1")
+            st.markdown("**Vaccine Coverage (%)**")
+            
+            vaccine_values_1 = {}
+            vaccines_per_row = 2
+            vaccine_groups = [VACCINE_COLS[i:i + vaccines_per_row] for i in range(0, len(VACCINE_COLS), vaccines_per_row)]
+            
+            for vaccine_group in vaccine_groups:
+                cols = st.columns(vaccines_per_row)
+                for idx, vaccine in enumerate(vaccine_group):
+                    with cols[idx]:
+                        value = st.number_input(
+                            f"{vaccine}",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=60.0,
+                            step=1.0,
+                            key=f"comp1_vaccine_{vaccine}",
+                            help=VACCINE_INFO[vaccine],
+                            label_visibility="visible"
+                        )
+                        vaccine_values_1[vaccine] = value
+        
+        # ========== COMBINATION 2 ==========
+        with comp_col2:
+            st.markdown("### Combination 2")
+            st.markdown("**Vaccine Coverage (%)**")
+            
+            vaccine_values_2 = {}
+            
+            for vaccine_group in vaccine_groups:
+                cols = st.columns(vaccines_per_row)
+                for idx, vaccine in enumerate(vaccine_group):
+                    with cols[idx]:
+                        value = st.number_input(
+                            f"{vaccine}",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=90.0,
+                            step=1.0,
+                            key=f"comp2_vaccine_{vaccine}",
+                            help=VACCINE_INFO[vaccine],
+                            label_visibility="visible"
+                        )
+                        vaccine_values_2[vaccine] = value
+        
+        st.markdown("---")
+        
+        # Compare button
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            compare_button = st.button("Compare Predictions", type="primary", use_container_width=True, key="compare_predict")
+        
+        if compare_button:
+            try:
+                with st.spinner("Processing predictions..."):
+                    # Prepare features for both scenarios
+                    df_pred_1 = prepare_prediction_features(
+                        vaccine_values_1,
+                        comp_year,
+                        comp_country,
+                        st.session_state.label_encoder,
+                        st.session_state.feature_names
+                    )
                     
-                    st.write("\n**Input Vaccine Coverages:**")
-                    for vaccine, value in vaccine_values.items():
-                        st.write(f"- {vaccine} ({VACCINE_INFO[vaccine]}): {value}%")
-                
-        except Exception as e:
-            st.error(f"Error making prediction: {str(e)}")
-            st.error("Please ensure all model files are properly loaded and compatible.")
-            with st.expander("Error Details"):
-                import traceback
-                st.code(traceback.format_exc())
+                    df_pred_2 = prepare_prediction_features(
+                        vaccine_values_2,
+                        comp_year,
+                        comp_country,
+                        st.session_state.label_encoder,
+                        st.session_state.feature_names
+                    )
+                    
+                    # Make predictions
+                    prediction_1 = st.session_state.model.predict(df_pred_1)[0]
+                    prediction_2 = st.session_state.model.predict(df_pred_2)[0]
+                    
+                    # Calculate difference
+                    difference = prediction_2 - prediction_1
+                    percent_change = (difference / prediction_1) * 100 if prediction_1 != 0 else 0
+                    
+                    # Display comparison results
+                    st.markdown("---")
+                    st.markdown("### 🎯 Comparison Results")
+                    
+                    # Create two columns for side-by-side results
+                    result_col1, result_col2 = st.columns(2)
+                    
+                    with result_col1:
+                        st.markdown("""
+                        <div class="prediction-result" style="background: linear-gradient(135deg, #1a4d5e 0%, #1a6b7a 100%);">
+                            <h3 style="color: #00d4ff; margin-bottom: 10px;">Scenario 1</h3>
+                            <div class="prediction-value" style="font-size: 3rem;">{:.2f}</div>
+                            <p style="color: #a0ffcc; font-size: 1rem;">years</p>
+                        </div>
+                        """.format(prediction_1), unsafe_allow_html=True)
+                    
+                    with result_col2:
+                        st.markdown("""
+                        <div class="prediction-result" style="background: linear-gradient(135deg, #1a5e4d 0%, #1a7a6b 100%);">
+                            <h3 style="color: #00d4ff; margin-bottom: 10px;">Scenario 2</h3>
+                            <div class="prediction-value" style="font-size: 3rem;">{:.2f}</div>
+                            <p style="color: #a0ffcc; font-size: 1rem;">years</p>
+                        </div>
+                        """.format(prediction_2), unsafe_allow_html=True)
+                    
+                    # Show difference
+                    st.markdown("---")
+                    st.markdown("### 📈 Impact Analysis")
+                    
+                    diff_col1, diff_col2, diff_col3 = st.columns(3)
+                    
+                    with diff_col1:
+                        st.metric(
+                            label="Difference",
+                            value=f"{difference:.2f} years",
+                            delta=f"{difference:.2f}"
+                        )
+                    
+                    with diff_col2:
+                        st.metric(
+                            label="Percent Change",
+                            value=f"{abs(percent_change):.2f}%",
+                            delta=f"{percent_change:.2f}%"
+                        )
+                    
+                    with diff_col3:
+                        if difference > 0:
+                            st.success("✅ Scenario 2 shows higher life expectancy")
+                        elif difference < 0:
+                            st.warning("⚠️ Scenario 1 shows higher life expectancy")
+                        else:
+                            st.info("➡️ Both scenarios show equal life expectancy")
+                    
+                    # Visualization
+                    st.markdown("---")
+                    st.markdown("### 📊 Visual Comparison")
+                    
+                    # Create comparison chart
+                    fig = go.Figure()
+                    
+                    fig.add_trace(go.Bar(
+                        x=['Scenario 1', 'Scenario 2'],
+                        y=[prediction_1, prediction_2],
+                        marker=dict(
+                            color=['#1a7a6b', '#00d4ff'],
+                            line=dict(color='#00ff88', width=2)
+                        ),
+                        text=[f'{prediction_1:.2f}', f'{prediction_2:.2f}'],
+                        textposition='outside',
+                        textfont=dict(size=16, color='white')
+                    ))
+                    
+                    fig.update_layout(
+                        title='Life Expectancy Comparison',
+                        yaxis_title='Life Expectancy (years)',
+                        template='plotly_dark',
+                        height=400,
+                        showlegend=False
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Detailed comparison
+                    with st.expander("📋 Detailed Comparison"):
+                        comp_col1, comp_col2 = st.columns(2)
+                        
+                        with comp_col1:
+                            st.markdown("**Scenario 1 Features:**")
+                            st.write(f"- Vaccination Coverage Index: {df_pred_1['vacc_coverage_index'].values[0]:.2f}%")
+                            st.write(f"- Vaccination Improvement: {df_pred_1['vacc_improvement'].values[0]:.2f}")
+                            
+                            st.markdown("**Scenario 1 Vaccines:**")
+                            for vaccine, value in vaccine_values_1.items():
+                                st.write(f"- {vaccine}: {value}%")
+                        
+                        with comp_col2:
+                            st.markdown("**Scenario 2 Features:**")
+                            st.write(f"- Vaccination Coverage Index: {df_pred_2['vacc_coverage_index'].values[0]:.2f}%")
+                            st.write(f"- Vaccination Improvement: {df_pred_2['vacc_improvement'].values[0]:.2f}")
+                            
+                            st.markdown("**Scenario 2 Vaccines:**")
+                            for vaccine, value in vaccine_values_2.items():
+                                st.write(f"- {vaccine}: {value}%")
+                    
+            except Exception as e:
+                st.error(f"Error making comparison: {str(e)}")
+                st.error("Please ensure all model files are properly loaded and compatible.")
+                with st.expander("Error Details"):
+                    import traceback
+                    st.code(traceback.format_exc())
 
 
 # ============================================================================
@@ -904,20 +1148,20 @@ def create_sidebar():
     
     with status_col1:
         if st.session_state.data_loaded:
-            st.markdown("**Data**")
+            st.markdown("**Data Loaded**")
         else:
             st.markdown("**No Data**")
     
     with status_col2:
         if st.session_state.model_loaded:
-            st.markdown("**Model**")
+            st.markdown("**Model Loaded**")
         else:
             st.markdown("**No Model**")
     
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
     <div style="padding: 10px; font-size: 0.8rem; color: #a0a0ff;">
-        <h4 style="color: #00d4ff;">ℹAbout</h4>
+        <h4 style="color: #00d4ff;">About</h4>
         <p>This application predicts life expectancy based on vaccine coverage data using machine learning.</p>
         <p style="margin-top: 10px; font-size: 0.75rem; color: #7080a0;">
         <b>Tip:</b> Place model files in the <code>models/</code> directory before running.
@@ -940,11 +1184,22 @@ def main():
     
     flow = create_sidebar()
     
+    #### PREV ####
+    # st.markdown("""
+    # <div style="text-align: center; padding: 20px 0;">
+    #     <h1>Life Expectancy Prediction Dashboard</h1>
+    #     <p style="font-size: 1.2rem; color: #a0a0ff;">
+    #         Explore the relationship between vaccine coverage and life expectancy
+    #     </p>
+    # </div>
+    # """, unsafe_allow_html=True)
+
+    #### IMPROVEMENT_V1 ####
     st.markdown("""
     <div style="text-align: center; padding: 20px 0;">
         <h1>Life Expectancy Prediction Dashboard</h1>
         <p style="font-size: 1.2rem; color: #a0a0ff;">
-            Explore the relationship between vaccine coverage and life expectancy
+            Predict the Life Expectancy for the Year using Vaccine Coverage
         </p>
     </div>
     """, unsafe_allow_html=True)
